@@ -1,0 +1,86 @@
+[
+  {
+    "ts": "2025-12-23T12:42:40.368Z",
+    "site_id": "SK-LM",
+    "line_id": "L1",
+    "asset_id": "Intake_Hopper",
+    "signal": "feed_temp",
+    "value": 17.4,
+    "unit": "\u00B0C",
+    "quality": "WARN",
+    "batch_id": "B20251216-001",
+    "seq": 269
+  },
+  {
+    "ts": "2025-12-23T12:42:41.418Z",
+    "site_id": "SK-LM",
+    "line_id": "L1",
+    "asset_id": "Washer/Peeler",
+    "signal": "peeler_load",
+    "value": 15.0,
+    "unit": "t/h",
+    "quality": "WARN",
+    "batch_id": "B20251216-001",
+    "seq": 270
+  },
+  {
+    "ts": "2025-12-23T12:42:42.453Z",
+    "site_id": "SK-LM",
+    "line_id": "L1",
+    "asset_id": "Optical_Sorter",
+    "signal": "optical_yield",
+    "value": 99.9,
+    "unit": "%",
+    "quality": "GOOD",
+    "batch_id": "B20251216-001",
+    "seq": 271
+  },
+  {
+    "ts": "2025-12-23T12:42:43.508Z",
+    "site_id": "SK-LM",
+    "line_id": "L1",
+    "asset_id": "Fryer",
+    "signal": "fryer_oil_temp",
+    "value": 195.0,
+    "unit": "\u00B0C",
+    "quality": "WARN",
+    "batch_id": "B20251216-002",
+    "seq": 272
+  },
+  {
+    "ts": "2025-12-23T12:42:44.563Z",
+    "site_id": "SK-LM",
+    "line_id": "L1",
+    "asset_id": "Dryer",
+    "signal": "dryer_humidity",
+    "value": 11.9,
+    "unit": "%",
+    "quality": "WARN",
+    "batch_id": "B20251216-002",
+    "seq": 273
+  },
+  {
+    "ts": "2025-12-23T12:42:45.608Z",
+    "site_id": "SK-LM",
+    "line_id": "L1",
+    "asset_id": "Packer",
+    "signal": "packager_speed",
+    "value": 150.0,
+    "unit": "bags/min",
+    "quality": "WARN",
+    "batch_id": "B20251216-002",
+    "seq": 274
+  },
+  {
+    "ts": "2025-12-23T12:42:46.663Z",
+    "site_id": "SK-LM",
+    "line_id": "L1",
+    "asset_id": "Energy_Center",
+    "signal": "energy_kwh",
+    "value": 386,
+    "unit": "kWh",
+    "quality": "WARN",
+    "batch_id": "B20251216-002",
+    "seq": 275
+  }
+]
