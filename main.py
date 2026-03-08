@@ -10,8 +10,10 @@ from datetime import datetime, timezone
 from functools import partial
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-sofname="potato-fe"
-version="2025.12.23"
+from graph import build_graph_tab, graph_update_from_frame
+
+sofname = "potato-fe"
+version = "2026.03.08"
 
 # ./feed.json
 DB_FEED_PATH = Path(__file__).with_name("feed.json")
@@ -29,7 +31,7 @@ signal_profiles = [
     {"signal": "seasoner_salt_flow", "asset": "Seasoner", "unit": "g/kg", "min": 15, "max": 32, "desc": "Salt dosing rate"},
     {"signal": "packager_speed", "asset": "Packer", "unit": "bags/min", "min": 80, "max": 140, "desc": "Packaging throughput"},
     {"signal": "energy_kwh", "asset": "Energy Center", "unit": "kWh", "min": 250, "max": 420, "desc": "Hourly energy draw"},
-    {"signal": "ambient_temp", "asset": "Ambient Node", "unit": "°C", "min": 18, "max": 32, "desc": "Hall ambient temperature"}
+    {"signal": "ambient_temp", "asset": "Ambient Node", "unit": "°C", "min": 18, "max": 32, "desc": "Hall ambient temperature"},
 ]
 signal_lookup = {profile["signal"]: profile for profile in signal_profiles}
 
@@ -104,7 +106,7 @@ def refresh_table_with_frame(table, frame):
             packet.get("unit", ""),
             packet.get("quality", ""),
             packet.get("batch_id", ""),
-            str(packet.get("seq", ""))
+            str(packet.get("seq", "")),
         ]
         for col, val in enumerate(values):
             item = QtWidgets.QTableWidgetItem(val)
@@ -131,12 +133,18 @@ def build_process_scene(scene):
         item.setBrush(QtGui.QBrush(brush_color))
         item.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
         scene.addItem(item)
+
+        label = scene.addSimpleText(name)
+        label.setBrush(QtGui.QBrush(QtGui.QColor("#ECEFF1")))
+        label.setPos(x_offset + 10, y_level + 35)
+
         process_items[name] = {
             "item": item,
             "default_pen_color": pen_color,
             "default_brush_color": brush_color,
         }
         x_offset += 170
+
     for name, x_pos, y_pos in utility_nodes:
         rect = QtCore.QRectF(x_pos, y_pos, 150, 90)
         item = QtWidgets.QGraphicsRectItem(rect)
@@ -146,6 +154,11 @@ def build_process_scene(scene):
         item.setBrush(QtGui.QBrush(brush_color))
         item.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
         scene.addItem(item)
+
+        label = scene.addSimpleText(name)
+        label.setBrush(QtGui.QBrush(QtGui.QColor("#ECEFF1")))
+        label.setPos(x_pos + 10, y_pos + 35)
+
         process_items[name] = {
             "item": item,
             "default_pen_color": pen_color,
@@ -223,9 +236,12 @@ def handle_stream_tick(feed, table, log_panel, process_items, signal_index, kpi_
             log_panel.appendPlainText(f"[ww] no packets found in {db_path.name}, waiting")
             stream_state["waiting_for_data"] = True
         return
+
     stream_state["waiting_for_data"] = False
     refresh_table_with_frame(table, frame)
     log_panel.appendPlainText(json.dumps(frame, indent=2))
+    graph_update_from_frame(frame, graph_state)
+
     for packet in frame:
         update_process_view(packet, process_items, signal_index)
         update_kpis(packet, kpi_labels, kpi_cache)
@@ -245,10 +261,13 @@ def toggle_stream(active, timer, status_label, source_combo, stream_state):
 def main():
     app = QtWidgets.QApplication(sys.argv)
     QtCore.QCoreApplication.setOrganizationName(f"{sofname}-{version}")
+
     main_window = QtWidgets.QMainWindow()
     main_window.setWindowTitle(f"{sofname}-{version}")
+    main_window.resize(1400, 860)
+
     central_widget = QtWidgets.QWidget()
-    main_layout = QtWidgets.QVBoxLayout(central_widget)
+    root_layout = QtWidgets.QVBoxLayout(central_widget)
 
     control_layout = QtWidgets.QHBoxLayout()
     ingest_source_combo = QtWidgets.QComboBox()
@@ -258,13 +277,22 @@ def main():
     ingest_status_label = QtWidgets.QLabel("Idle")
     ingest_status_label.setStyleSheet("color: #90CAF9;")
     edit_checkbox = QtWidgets.QCheckBox("Edit mode")
+
     control_layout.addWidget(QtWidgets.QLabel("Ingest source:"))
     control_layout.addWidget(ingest_source_combo)
     control_layout.addWidget(ingest_button)
     control_layout.addWidget(ingest_status_label)
     control_layout.addStretch(1)
     control_layout.addWidget(edit_checkbox)
-    main_layout.addLayout(control_layout)
+    root_layout.addLayout(control_layout)
+
+    tabs = QtWidgets.QTabWidget()
+    root_layout.addWidget(tabs, 1)
+    tabs.setTabPosition(QtWidgets.QTabWidget.South)
+
+    # main tab
+    main_tab = QtWidgets.QWidget()
+    main_tab_layout = QtWidgets.QVBoxLayout(main_tab)
 
     kpi_box = QtWidgets.QGroupBox("Live KPIs")
     kpi_layout = QtWidgets.QGridLayout(kpi_box)
@@ -272,7 +300,7 @@ def main():
         "throughput": "Line Throughput (kg/h)",
         "energy": "Energy Intensity (kWh/t)",
         "moisture": "Moisture Deviation (%)",
-        "yield": "Net Yield (%)"
+        "yield": "Net Yield (%)",
     }
     kpi_labels = {}
     row = 0
@@ -286,6 +314,7 @@ def main():
         row += 1
 
     splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+
     table_container = QtWidgets.QWidget()
     table_layout = QtWidgets.QVBoxLayout(table_container)
     table_label = QtWidgets.QLabel("Telemetry snapshot")
@@ -295,60 +324,62 @@ def main():
     table_layout.addWidget(data_table)
     splitter.addWidget(table_container)
 
-    scene = QtWidgets.QGraphicsScene()
-    process_items = build_process_scene(scene)
-    graphics_view = QtWidgets.QGraphicsView(scene)
-    graphics_view.setRenderHint(QtGui.QPainter.Antialiasing)
-    graphics_view.setBackgroundBrush(QtGui.QColor("#263238"))
-    graphics_view.setMinimumHeight(360)
-    splitter.addWidget(graphics_view)
-    splitter.setSizes([500, 900])
+    process_container = QtWidgets.QWidget()
+    process_layout = QtWidgets.QVBoxLayout(process_container)
+    process_label = QtWidgets.QLabel("Process flow")
+    graphics_view = QtWidgets.QGraphicsView()
+    graphics_scene = QtWidgets.QGraphicsScene()
+    graphics_view.setScene(graphics_scene)
+    graphics_view.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.TextAntialiasing)
+    graphics_view.setDragMode(QtWidgets.QGraphicsView.ScrollHandDrag)
+    process_items = build_process_scene(graphics_scene)
 
-    tab_widget = QtWidgets.QTabWidget()
-    tab_widget.setTabPosition(QtWidgets.QTabWidget.South)
+    process_layout.addWidget(process_label)
+    process_layout.addWidget(graphics_view)
+    splitter.addWidget(process_container)
+    splitter.setSizes([700, 700])
 
     main_tab = QtWidgets.QWidget()
     main_tab_layout = QtWidgets.QVBoxLayout(main_tab)
     main_tab_layout.addWidget(kpi_box)
-    main_tab_layout.addWidget(splitter)
-    tab_widget.addTab(main_tab, "Main")
+    main_tab_layout.addWidget(splitter, 1)
 
-    log_tab = QtWidgets.QWidget()
-    log_layout = QtWidgets.QVBoxLayout(log_tab)
-    log_label = QtWidgets.QLabel("Log")
+    # graph tab
+    graph_tab, graph_state = build_graph_tab(signal_profiles)
+
+    # log tab
+    logs_tab = QtWidgets.QWidget()
+    logs_layout = QtWidgets.QVBoxLayout(logs_tab)
+    logs_layout.addWidget(QtWidgets.QLabel("Logs"))
     log_panel = QtWidgets.QPlainTextEdit()
     log_panel.setReadOnly(True)
-    log_panel.setMaximumBlockCount(500)
-    log_layout.addWidget(log_label)
-    log_layout.addWidget(log_panel)
-    tab_widget.addTab(log_tab, "Logs")
+    logs_layout.addWidget(log_panel, 1)
 
-    main_layout.addWidget(tab_widget)
+    tabs.addTab(main_tab, "Main")
+    tabs.addTab(graph_tab, "Graph")
+    tabs.addTab(logs_tab, "Logs")
 
     main_window.setCentralWidget(central_widget)
-    main_window.resize(1400, 820)
-    main_window.show()
 
-    database_feed = create_feed(DB_FEED_PATH)
-    if feed_empty(database_feed):
-        log_panel.appendPlainText(f"no packets found in {DB_FEED_PATH}.")
-
-    kpi_cache = {"throughput": None, "energy_raw": None}
+    feed = create_feed(DB_FEED_PATH)
     stream_state = {"waiting_for_data": False}
+    kpi_cache = {}
+
     stream_timer = QtCore.QTimer()
     stream_timer.timeout.connect(
         partial(
             handle_stream_tick,
-            database_feed,
-            data_table,
-            log_panel,
-            process_items,
-            signal_lookup,
-            kpi_labels,
-            kpi_cache,
-            stream_timer,
-            stream_state,
-            DB_FEED_PATH,
+            feed=feed,
+            table=data_table,
+            log_panel=log_panel,
+            process_items=process_items,
+            signal_index=signal_lookup,
+            kpi_labels=kpi_labels,
+            kpi_cache=kpi_cache,
+            timer=stream_timer,
+            stream_state=stream_state,
+            db_path=DB_FEED_PATH,
+            graph_state=graph_state,
         )
     )
 
@@ -361,8 +392,12 @@ def main():
             stream_state=stream_state,
         )
     )
-    edit_checkbox.stateChanged.connect(partial(toggle_edit_mode, process_items=process_items, graphics_view=graphics_view))
 
+    edit_checkbox.stateChanged.connect(
+        partial(toggle_edit_mode, process_items=process_items, graphics_view=graphics_view)
+    )
+
+    main_window.show()
     sys.exit(app.exec_())
 
 
