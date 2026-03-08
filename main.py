@@ -229,7 +229,7 @@ def update_kpis(packet, kpi_labels, kpi_cache):
 
 # exec a single refresh cycle:
 #  -> load packets -> update UI -> log output -> repeat
-def handle_stream_tick(feed, table, log_panel, process_items, signal_index, kpi_labels, kpi_cache, timer, stream_state, db_path):
+def handle_stream_tick(feed, table, log_panel, process_items, signal_index, kpi_labels, kpi_cache, timer, stream_state, db_path, graph_state):
     frame = next_frame(feed)
     if not frame:
         if not stream_state["waiting_for_data"]:
