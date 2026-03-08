@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+
+# main.py
+
 import json
 import sys
 from itertools import count
