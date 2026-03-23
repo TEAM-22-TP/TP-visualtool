@@ -1,0 +1,68 @@
+{
+  "scene": {
+    "width": 1500,
+    "height": 420
+  },
+  "nodes": [
+    {
+      "uuid": "882f1695-29a4-4b32-a4bf-858f616c2ead",
+      "label": "Intake Hopper",
+      "x": 40,  "y": 90,  "w": 150, "h": 90,
+      "pen_color": "#90A4AE", "brush_color": "#455A64", "pen_width": 1.5
+    },
+    {
+      "uuid": "5fddb160-7c08-4759-9e26-bd7ee1e73792",
+      "label": "Washer/Peeler",
+      "x": 210, "y": 90,  "w": 150, "h": 90,
+      "pen_color": "#90A4AE", "brush_color": "#455A64", "pen_width": 1.5
+    },
+    {
+      "uuid": "bc3905f1-cee6-48b9-9580-6309f6c44697",
+      "label": "Optical Sorter",
+      "x": 380, "y": 90,  "w": 150, "h": 90,
+      "pen_color": "#90A4AE", "brush_color": "#455A64", "pen_width": 1.5
+    },
+    {
+      "uuid": "335bfc50-b1c1-451b-9e6b-e3c15d5cd796",
+      "label": "Steamer",
+      "x": 550, "y": 90,  "w": 150, "h": 90,
+      "pen_color": "#90A4AE", "brush_color": "#455A64", "pen_width": 1.5
+    },
+    {
+      "uuid": "1869dc17-dd54-4fd7-a126-8153484057db",
+      "label": "Fryer",
+      "x": 720, "y": 90,  "w": 150, "h": 90,
+      "pen_color": "#90A4AE", "brush_color": "#455A64", "pen_width": 1.5
+    },
+    {
+      "uuid": "c3d435f4-a8ca-4ccb-84a8-4e42a74c3410",
+      "label": "Dryer",
+      "x": 890, "y": 90,  "w": 150, "h": 90,
+      "pen_color": "#90A4AE", "brush_color": "#455A64", "pen_width": 1.5
+    },
+    {
+      "uuid": "2a51877b-775f-43b9-986b-cbe77da716b8",
+      "label": "Seasoner",
+      "x": 1060, "y": 90, "w": 150, "h": 90,
+      "pen_color": "#90A4AE", "brush_color": "#455A64", "pen_width": 1.5
+    },
+    {
+      "uuid": "8534c9d4-3413-4cf6-9905-996b3867924c",
+      "label": "Packer",
+      "x": 1230, "y": 90, "w": 150, "h": 90,
+      "pen_color": "#90A4AE", "brush_color": "#455A64", "pen_width": 1.5
+    },
+    {
+      "uuid": "c93b0342-f9df-4b2e-bc22-282e0db03d33",
+      "label": "Energy Center",
+      "x": 180, "y": 280, "w": 150, "h": 90,
+      "pen_color": "#B0BEC5", "brush_color": "#37474F", "pen_width": 1.2
+    },
+    {
+      "uuid": "4fbc4145-afd1-4a0a-be34-181947e2f2b1",
+      "label": "Ambient Node",
+      "x": 420, "y": 280, "w": 150, "h": 90,
+      "pen_color": "#B0BEC5", "brush_color": "#37474F", "pen_width": 1.2
+    }
+  ]
+}

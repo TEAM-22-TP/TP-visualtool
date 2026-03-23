@@ -18,6 +18,9 @@ version = "2026.03.08"
 # ./feed.json
 DB_FEED_PATH = Path(__file__).with_name("feed.json")
 
+# ./scene.json
+DB_SCENE_PATH = Path(__file__).with_name("scene.json")
+
 # signal metadata for each telemetry point
 # template
 signal_profiles = [
@@ -80,6 +83,24 @@ def next_frame(feed: dict) -> list[dict]:
     return frame
 
 
+# load the process scene definition from scene.json
+def load_scene_definition(path: Path) -> dict:
+    fallback = {"scene": {"width": 1500, "height": 420}, "nodes": []}
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            raise ValueError("scene.json must be a JSON object at the top level")
+        return data
+    except FileNotFoundError:
+        print(f"[ee] scene definition not found: {path}")
+    except json.JSONDecodeError as exc:
+        print(f"[ee] scene JSON parse error: {exc}")
+    except ValueError as exc:
+        print(f"[ee] {exc}")
+    return fallback
+
+
 # config the telemetry QTableWidget
 def configure_table(table):
     headers = ["Timestamp (UTC)", "Asset", "Signal", "Value", "Unit", "Quality", "Batch", "Seq"]
@@ -116,54 +137,45 @@ def refresh_table_with_frame(table, frame):
             table.setItem(row, col, item)
 
 
-# builds the graphical process flow diagram and return item references
-def build_process_scene(scene):
+# builds the graphical process flow diagram from a scene definition dict
+# and returns item references keyed by node label
+def build_process_scene(scene, scene_def: dict) -> dict:
     process_items = {}
-    scene.setSceneRect(0, 0, 1500, 420)
-    primary_chain = ["Intake Hopper", "Washer/Peeler", "Optical Sorter", "Steamer", "Fryer", "Dryer", "Seasoner", "Packer"]
-    utility_nodes = [("Energy Center", 180, 280), ("Ambient Node", 420, 280)]
-    x_offset = 40
-    y_level = 90
-    for name in primary_chain:
-        rect = QtCore.QRectF(x_offset, y_level, 150, 90)
+
+    scene_meta = scene_def.get("scene", {})
+    scene_width = scene_meta.get("width", 1500)
+    scene_height = scene_meta.get("height", 420)
+    scene.setSceneRect(0, 0, scene_width, scene_height)
+
+    for node in scene_def.get("nodes", []):
+        x = float(node.get("x", 0))
+        y = float(node.get("y", 0))
+        w = float(node.get("w", 150))
+        h = float(node.get("h", 90))
+        label_text = node.get("label", "")
+        pen_color = QtGui.QColor(node.get("pen_color", "#90A4AE"))
+        brush_color = QtGui.QColor(node.get("brush_color", "#455A64"))
+        pen_width = float(node.get("pen_width", 1.5))
+
+        rect = QtCore.QRectF(x, y, w, h)
         item = QtWidgets.QGraphicsRectItem(rect)
-        pen_color = QtGui.QColor("#90A4AE")
-        brush_color = QtGui.QColor("#455A64")
-        item.setPen(QtGui.QPen(pen_color, 1.5))
+        item.setPen(QtGui.QPen(pen_color, pen_width))
         item.setBrush(QtGui.QBrush(brush_color))
         item.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
         scene.addItem(item)
 
-        label = scene.addSimpleText(name)
+        label = scene.addSimpleText(label_text)
         label.setBrush(QtGui.QBrush(QtGui.QColor("#ECEFF1")))
-        label.setPos(x_offset + 10, y_level + 35)
+        label.setPos(x + 10, y + 35)
 
-        process_items[name] = {
+        process_items[label_text] = {
+            "uuid": node.get("uuid", ""),
             "item": item,
             "default_pen_color": pen_color,
             "default_brush_color": brush_color,
+            "pen_width": pen_width,
         }
-        x_offset += 170
 
-    for name, x_pos, y_pos in utility_nodes:
-        rect = QtCore.QRectF(x_pos, y_pos, 150, 90)
-        item = QtWidgets.QGraphicsRectItem(rect)
-        pen_color = QtGui.QColor("#B0BEC5")
-        brush_color = QtGui.QColor("#37474F")
-        item.setPen(QtGui.QPen(pen_color, 1.2))
-        item.setBrush(QtGui.QBrush(brush_color))
-        item.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
-        scene.addItem(item)
-
-        label = scene.addSimpleText(name)
-        label.setBrush(QtGui.QBrush(QtGui.QColor("#ECEFF1")))
-        label.setPos(x_pos + 10, y_pos + 35)
-
-        process_items[name] = {
-            "item": item,
-            "default_pen_color": pen_color,
-            "default_brush_color": brush_color,
-        }
     return process_items
 
 
@@ -200,7 +212,7 @@ def update_process_view(packet, process_items, signal_index):
         brush_color = info["default_brush_color"]
         pen_color = info["default_pen_color"]
     info["item"].setBrush(QtGui.QBrush(brush_color))
-    info["item"].setPen(QtGui.QPen(pen_color, 1.8 if quality in {"WARN", "ERR"} else 1.5))
+    info["item"].setPen(QtGui.QPen(pen_color, 1.8 if quality in {"WARN", "ERR"} else info["pen_width"]))
 
 
 # calculate + update toplevel KPI based on inbound signals
@@ -332,7 +344,9 @@ def main():
     graphics_view.setScene(graphics_scene)
     graphics_view.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.TextAntialiasing)
     graphics_view.setDragMode(QtWidgets.QGraphicsView.ScrollHandDrag)
-    process_items = build_process_scene(graphics_scene)
+
+    scene_def = load_scene_definition(DB_SCENE_PATH)
+    process_items = build_process_scene(graphics_scene, scene_def)
 
     process_layout.addWidget(process_label)
     process_layout.addWidget(graphics_view)
