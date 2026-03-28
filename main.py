@@ -13,7 +13,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from graph import build_graph_tab, graph_update_from_frame
 
 sofname = "potato-fe"
-version = "2026.03.23"
+version = "2026.03.28"
 
 # ./feed.json
 DB_FEED_PATH = Path(__file__).with_name("feed.json")
