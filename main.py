@@ -157,20 +157,25 @@ def build_process_scene(scene, scene_def: dict) -> dict:
         brush_color = QtGui.QColor(node.get("brush_color", "#455A64"))
         pen_width = float(node.get("pen_width", 1.5))
 
-        rect = QtCore.QRectF(x, y, w, h)
-        item = QtWidgets.QGraphicsRectItem(rect)
+        # rect item positioned at (x, y); local rect starts at (0, 0)
+        item = QtWidgets.QGraphicsRectItem(0, 0, w, h)
+        item.setPos(x, y)
         item.setPen(QtGui.QPen(pen_color, pen_width))
         item.setBrush(QtGui.QBrush(brush_color))
         item.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
         scene.addItem(item)
 
-        label = scene.addSimpleText(label_text)
+        # make label a child of the rect item so it moves together with it
+        label = QtWidgets.QGraphicsSimpleTextItem(label_text, item)
         label.setBrush(QtGui.QBrush(QtGui.QColor("#ECEFF1")))
-        label.setPos(x + 10, y + 35)
+        label.setPos(10, 35)
+
+        label.setAcceptedMouseButtons(QtCore.Qt.NoButton)
 
         process_items[label_text] = {
             "uuid": node.get("uuid", ""),
             "item": item,
+            "label": label,
             "default_pen_color": pen_color,
             "default_brush_color": brush_color,
             "pen_width": pen_width,
