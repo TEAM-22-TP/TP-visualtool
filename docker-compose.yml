@@ -1,0 +1,8 @@
+services:
+  visualtool:
+    build: .
+    ports:
+      - "6080:6080"   # noVNC (web browser)
+      - "5900:5900"   # VNC client
+    volumes:
+      - ./feed.json:/app/feed.json
