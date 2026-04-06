@@ -2,28 +2,44 @@
 
 # main.py
 
+import argparse
 import json
 import sys
+import threading
+from collections import deque
 from itertools import count
 from pathlib import Path
 from datetime import datetime, timezone
 from functools import partial
+import urllib.error
+import urllib.request
+
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from graph import build_graph_tab, graph_update_from_frame
 
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    mqtt = None
+
 sofname = "potato-fe"
-version = "2026.03.28"
+version = "2026.04.06"
 
 # ./feed.json
 DB_FEED_PATH = Path(__file__).with_name("feed.json")
 
+# ./simple.json - we get this from translation layer. does not have keys. XXX: useless at this point in the project
+DB_SIMPLE_PATH = Path(__file__).with_name("simple.json")
+
 # ./scene.json
 DB_SCENE_PATH = Path(__file__).with_name("scene.json")
 
+# fallback ./config.json
+DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.json")
+
 # signal metadata for each telemetry point
-# template
-signal_profiles = [
+DEFAULT_SIGNAL_PROFILES = [
     {"signal": "feed_temp", "asset": "Intake Hopper", "unit": "°C", "min": 5, "max": 18, "desc": "Raw potato intake temperature"},
     {"signal": "peeler_load", "asset": "Washer/Peeler", "unit": "t/h", "min": 4, "max": 12, "desc": "Peeler throughput"},
     {"signal": "washer_turbidity", "asset": "Washer/Peeler", "unit": "NTU", "min": 10, "max": 160, "desc": "Wash water turbidity"},
@@ -36,27 +52,501 @@ signal_profiles = [
     {"signal": "energy_kwh", "asset": "Energy Center", "unit": "kWh", "min": 250, "max": 420, "desc": "Hourly energy draw"},
     {"signal": "ambient_temp", "asset": "Ambient Node", "unit": "°C", "min": 18, "max": 32, "desc": "Hall ambient temperature"},
 ]
-signal_lookup = {profile["signal"]: profile for profile in signal_profiles}
+
+# simple mode has one synthetic signal as taken from the translation layer
+SIMPLE_SIGNAL_PROFILES = [
+    {
+        "signal": "DEMO",
+        "asset": "DEMO",
+        "unit": "DEMO",
+        "min": -1.0,
+        "max": 1.0,
+        "auto_range": True,
+        "desc": "DEMO",
+    }
+]
 
 
-# config the JSON feed path and its sequence generator
-def create_feed(path: Path) -> dict:
-    return {"path": path, "sequence_source": count(1)}
+def _safe_int_reason_code(reason_code) -> int:
+    try:
+        return int(reason_code)
+    except Exception:
+        try:
+            return int(reason_code.value)
+        except Exception:
+            return -1
+
+
+def _utc_iso_from_ms(ts_ms):
+    if isinstance(ts_ms, (int, float)):
+        return datetime.fromtimestamp(float(ts_ms) / 1000.0, tz=timezone.utc).isoformat(timespec="milliseconds")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _enqueue_mqtt_log(feed: dict, message: str):
+    runtime = feed.get("mqtt_runtime")
+    if not runtime:
+        return
+    stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    line = f"[{stamp}] {message}"
+    with runtime["log_lock"]:
+        runtime["log_queue"].append(line)
+    runtime["log_sem"].release()
+
+
+def _enqueue_mqtt_payload(feed: dict, payload_obj):
+    runtime = feed.get("mqtt_runtime")
+    if not runtime:
+        return
+    with runtime["in_lock"]:
+        runtime["in_queue"].append(payload_obj)
+    runtime["in_sem"].release()
+
+
+def _drain_mqtt_logs(feed: dict, log_panel, max_lines: int = 300):
+    runtime = feed.get("mqtt_runtime")
+    if not runtime:
+        return
+    lines = []
+    for _ in range(max_lines):
+        if not runtime["log_sem"].acquire(blocking=False):
+            break
+        with runtime["log_lock"]:
+            if runtime["log_queue"]:
+                lines.append(runtime["log_queue"].popleft())
+    for line in lines:
+        log_panel.appendPlainText(line)
+
+
+def _drain_mqtt_payloads(feed: dict, max_items: int = 500):
+    runtime = feed.get("mqtt_runtime")
+    if not runtime:
+        return []
+    out = []
+    for _ in range(max_items):
+        if not runtime["in_sem"].acquire(blocking=False):
+            break
+        with runtime["in_lock"]:
+            if runtime["in_queue"]:
+                out.append(runtime["in_queue"].popleft())
+    return out
+
+
+def _normalize_mqtt_payload_to_packet(payload: dict) -> dict:
+    source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+
+    ts = _utc_iso_from_ms(payload.get("timestamp_ms"))
+    signal = payload.get("signal")
+    if not isinstance(signal, str) or not signal.strip():
+        signal = payload.get("mqtt_topic", "mqtt_value")
+
+    asset_id = source.get("browse_path") or source.get("endpoint") or payload.get("mqtt_topic") or "mqtt"
+
+    value = payload.get("value")
+    if not isinstance(value, (int, float)):
+        raise ValueError("MQTT payload missing numeric 'value'")
+
+    packet = {
+        "ts": ts,
+        "asset_id": str(asset_id),
+        "signal": str(signal),
+        "value": float(value),
+        "unit": str(payload.get("unit", "")),
+        "quality": str(payload.get("quality", "GOOD")),
+        "batch_id": str(payload.get("batch_id", "")),
+        "seq": payload.get("timestamp_ms", ""),
+    }
+    return packet
+
+
+def _mqtt_on_connect(client, userdata, flags, reason_code, properties=None):
+    feed = userdata["feed"]
+    runtime = feed["mqtt_runtime"]
+    rc = _safe_int_reason_code(reason_code)
+    if rc == 0:
+        topic_sub = feed["source"].get("topic_sub", "")
+        qos = int(feed["source"].get("qos", 0))
+        client.subscribe(topic_sub, qos=qos)
+        runtime["connected_event"].set()
+        _enqueue_mqtt_log(feed, f"[ii] MQTT connected and subscribed to '{topic_sub}' (qos={qos})")
+    else:
+        _enqueue_mqtt_log(feed, f"[ee] MQTT connect failed, rc={rc}")
+
+
+def _mqtt_on_disconnect(client, userdata, reason_code, properties=None):
+    feed = userdata["feed"]
+    runtime = feed["mqtt_runtime"]
+    rc = _safe_int_reason_code(reason_code)
+    runtime["connected_event"].clear()
+    if runtime["stop_event"].is_set():
+        _enqueue_mqtt_log(feed, "[ii] MQTT disconnected")
+    else:
+        _enqueue_mqtt_log(feed, f"[ww] MQTT unexpected disconnect, rc={rc}")
+
+
+def _mqtt_on_message(client, userdata, msg):
+    feed = userdata["feed"]
+    runtime = feed["mqtt_runtime"]
+
+    if runtime["stop_event"].is_set():
+        return
+
+    try:
+        text = msg.payload.decode("utf-8", errors="replace")
+        obj = json.loads(text)
+
+        # Accept single object or list of objects
+        if isinstance(obj, list):
+            count_ok = 0
+            for row in obj:
+                if isinstance(row, dict):
+                    _enqueue_mqtt_payload(feed, row)
+                    count_ok += 1
+            _enqueue_mqtt_log(feed, f"[ii] MQTT message on '{msg.topic}' with {count_ok} packet(s)")
+        elif isinstance(obj, dict):
+            _enqueue_mqtt_payload(feed, obj)
+            _enqueue_mqtt_log(feed, f"[ii] MQTT message on '{msg.topic}'")
+        else:
+            _enqueue_mqtt_log(feed, f"[ee] MQTT payload is not object/list on topic '{msg.topic}'")
+    except json.JSONDecodeError as exc:
+        _enqueue_mqtt_log(feed, f"[ee] MQTT JSON parse error on topic '{msg.topic}': {exc}")
+    except Exception as exc:
+        _enqueue_mqtt_log(feed, f"[ee] MQTT message handling failed: {exc}")
+
+
+def mqtt_start(feed: dict):
+    if feed.get("source_type") != "mqtt":
+        return
+
+    if mqtt is None:
+        _enqueue_mqtt_log(feed, "[ii] can't find paho-mqtt. MQTT is therefore disabled.")
+        return
+
+    runtime = feed["mqtt_runtime"]
+    if runtime["started"]:
+        return
+
+    src = feed["source"]
+    client_id = src.get("client_id") or f"{sofname}-{version}".replace("/", "-")
+    broker = src["broker"]
+    port = int(src.get("port", 1883))
+    keepalive = int(src.get("keepalive", 60))
+    username = src.get("username")
+    password = src.get("password")
+
+    client = mqtt.Client(client_id=client_id, clean_session=True)
+    if username:
+        client.username_pw_set(username, password=password)
+
+    client.user_data_set({"feed": feed})
+    client.on_connect = _mqtt_on_connect
+    client.on_message = _mqtt_on_message
+    client.on_disconnect = _mqtt_on_disconnect
+
+    runtime["stop_event"].clear()
+    runtime["client"] = client
+    runtime["started"] = True
+
+    try:
+        client.connect_async(broker, port=port, keepalive=keepalive)
+        client.loop_start()
+        _enqueue_mqtt_log(feed, f"[ii] MQTT connecting to {broker}:{port} as '{client_id}'")
+    except Exception as exc:
+        runtime["started"] = False
+        runtime["client"] = None
+        _enqueue_mqtt_log(feed, f"[ee] MQTT start failed: {exc}")
+
+
+def mqtt_stop(feed: dict):
+    if feed.get("source_type") != "mqtt":
+        return
+    runtime = feed.get("mqtt_runtime")
+    if not runtime or not runtime["started"]:
+        return
+
+    runtime["stop_event"].set()
+    runtime["connected_event"].clear()
+    client = runtime.get("client")
+    runtime["started"] = False
+    runtime["client"] = None
+
+    if client is not None:
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+        try:
+            client.loop_stop()
+        except Exception:
+            pass
+
+    _enqueue_mqtt_log(feed, "[ii] MQTT stream stopped")
+
+
+def mqtt_publish_dummy_control(feed: dict):
+    if feed.get("source_type") != "mqtt":
+        return False, "current source is not MQTT"
+
+    runtime = feed.get("mqtt_runtime", {})
+    client = runtime.get("client")
+
+    if client is None:
+        return False, "MQTT client not started"
+
+    src = feed["source"]
+    topic_pub = src.get("topic_pub", "control/potato-fe")
+    qos = int(src.get("qos", 0))
+
+    payload = {
+        "type": "control",
+        "timestamp_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "source": sofname,
+        "message": "hello from the frontend!",
+        "target": "potato-line",
+    }
+
+    try:
+        info = client.publish(topic_pub, json.dumps(payload), qos=qos, retain=False)
+        if info.rc == mqtt.MQTT_ERR_SUCCESS:
+            return True, f"published control to '{topic_pub}'"
+        return False, f"publish failed rc={info.rc}"
+    except Exception as exc:
+        return False, f"publish failed: {exc}"
+
+
+def _validate_and_normalize_config(raw_config: dict, config_path: Path, default_source_path: Path) -> dict:
+    fallback = {
+        "polling": 1.0,
+        "source": {"type": "file", "location": str(default_source_path.resolve())},
+    }
+
+    if not isinstance(raw_config, dict):
+        raise ValueError("config must be a JSON object")
+
+    polling = raw_config.get("polling", fallback["polling"])
+    if not isinstance(polling, (int, float)) or polling <= 0:
+        raise ValueError("config.polling must be a positive number (seconds)")
+    polling = float(polling)
+
+    source = raw_config.get("source")
+    if not isinstance(source, dict):
+        raise ValueError("config.source must be a JSON object")
+
+    source_type = source.get("type")
+    if source_type not in {"file", "network", "mqtt"}:
+        raise ValueError("config.source.type must be 'file', 'network', or 'mqtt'")
+
+    if source_type in {"file", "network"}:
+        location = source.get("location")
+        if not isinstance(location, str) or not location.strip():
+            raise ValueError("config.source.location must be a non-empty string")
+
+        if source_type == "file":
+            p = Path(location).expanduser()
+            if not p.is_absolute():
+                p = (config_path.parent / p).resolve()
+            source_location = str(p)
+            display_location = location
+        else:
+            source_location = location.strip()
+            display_location = source_location
+
+        return {
+            "polling": polling,
+            "source": {
+                "type": source_type,
+                "location": source_location,
+                "display_location": display_location,
+            },
+        }
+
+    # MQTT config
+    broker = source.get("broker")
+    if not isinstance(broker, str) or not broker.strip():
+        raise ValueError("config.source.broker must be a non-empty string for mqtt")
+
+    port = source.get("port", 1883)
+    if not isinstance(port, int) or not (1 <= port <= 65535):
+        raise ValueError("config.source.port must be int in [1, 65535]")
+
+    keepalive = source.get("keepalive", 60)
+    if not isinstance(keepalive, int) or keepalive <= 0:
+        raise ValueError("config.source.keepalive must be a positive int")
+
+    topic_sub = source.get("topic_sub")
+    if not isinstance(topic_sub, str) or not topic_sub.strip():
+        raise ValueError("config.source.topic_sub must be a non-empty string for mqtt")
+
+    topic_pub = source.get("topic_pub", "control/potato-fe")
+    if not isinstance(topic_pub, str) or not topic_pub.strip():
+        raise ValueError("config.source.topic_pub must be a non-empty string")
+
+    qos = source.get("qos", 0)
+    if not isinstance(qos, int) or qos not in {0, 1, 2}:
+        raise ValueError("config.source.qos must be 0, 1, or 2")
+
+    username = source.get("username")
+    password = source.get("password")
+    client_id = source.get("client_id", f"{sofname}-{version}".replace("/", "-"))
+
+    if username is not None and not isinstance(username, str):
+        raise ValueError("config.source.username must be a string")
+    if password is not None and not isinstance(password, str):
+        raise ValueError("config.source.password must be a string")
+    if not isinstance(client_id, str) or not client_id.strip():
+        raise ValueError("config.source.client_id must be a non-empty string")
+
+    display_location = f"mqtt://{broker}:{port} sub={topic_sub}"
+
+    return {
+        "polling": polling,
+        "source": {
+            "type": "mqtt",
+            "broker": broker.strip(),
+            "port": port,
+            "keepalive": keepalive,
+            "topic_sub": topic_sub.strip(),
+            "topic_pub": topic_pub.strip(),
+            "qos": qos,
+            "username": username,
+            "password": password,
+            "client_id": client_id.strip(),
+            "display_location": display_location,
+            "location": display_location,  # compatibility
+        },
+    }
+
+
+def load_runtime_config(config_path: Path, default_source_path: Path) -> dict:
+    fallback = {
+        "polling": 1.0,
+        "source": {"type": "file", "location": str(default_source_path.resolve()), "display_location": str(default_source_path)},
+    }
+
+    try:
+        with config_path.open("r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        return _validate_and_normalize_config(raw, config_path, default_source_path)
+    except FileNotFoundError:
+        print(f"[ww] config not found: {config_path} - using fallback.")
+    except json.JSONDecodeError as exc:
+        print(f"[ee] config JSON parse error in {config_path}: {exc}.")
+    except ValueError as exc:
+        print(f"[ee] invalid config in {config_path}: {exc}.")
+    return fallback
+
+
+# config the JSON feed source and its sequence generator
+def create_feed(config: dict, simple: bool = False) -> dict:
+    src = config["source"]
+    feed = {
+        "source_type": src["type"],
+        "source_location": src.get("location", ""),
+        "source_display_location": src.get("display_location", src.get("location", "")),
+        "sequence_source": count(1),
+        "simple": simple,
+        "source": src,
+    }
+
+    if src["type"] == "mqtt":
+        feed["mqtt_runtime"] = {
+            "client": None,
+            "started": False,
+            "connected_event": threading.Event(),
+            "stop_event": threading.Event(),
+            "in_queue": deque(),
+            "in_lock": threading.Lock(),
+            "in_sem": threading.Semaphore(0),
+            "log_queue": deque(),
+            "log_lock": threading.Lock(),
+            "log_sem": threading.Semaphore(0),
+        }
+
+    return feed
+
+
+# helper that reads JSON payload either from local disk or network
+def read_payload(feed: dict):
+    source_type = feed.get("source_type")
+    source_location = feed.get("source_location")
+    user_agent = f"{sofname}/{version}"
+
+    if source_type == "file":
+        with Path(source_location).open("r", encoding="utf-8") as source:
+            return json.load(source)
+
+    if source_type == "network":
+        req = urllib.request.Request(
+            source_location,
+            headers={"User-Agent": user_agent},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw_bytes = resp.read()
+            charset = resp.headers.get_content_charset() or "utf-8"
+            text = raw_bytes.decode(charset, errors="replace")
+            return json.loads(text)
+
+    raise ValueError(f"unsupported source type for read_payload: {source_type}")
 
 
 # reads the latest packets and validate the JSON structure
 def read_latest_packets(feed: dict) -> list[dict]:
-    path = feed["path"]
+    simple_mode = feed.get("simple", False)
+    source_type = feed.get("source_type")
+    source_location = feed.get("source_location")
+
     try:
-        with path.open("r", encoding="utf-8") as source:
-            payload = json.load(source)
+        if source_type == "mqtt":
+            incoming = _drain_mqtt_payloads(feed)
+            if not incoming:
+                return []
+
+            if simple_mode:
+                out = []
+                for payload in incoming:
+                    if not isinstance(payload, dict):
+                        continue
+                    value = payload.get("value")
+                    if isinstance(value, (int, float)):
+                        out.append({"value": float(value)})
+                return out
+
+            out = []
+            for payload in incoming:
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    out.append(_normalize_mqtt_payload_to_packet(payload))
+                except ValueError as exc:
+                    _enqueue_mqtt_log(feed, f"[ee] invalid MQTT payload: {exc}")
+            return out
+
+        payload = read_payload(feed)
+
+        if simple_mode:
+            if not isinstance(payload, dict):
+                raise ValueError("simple mode source must be a JSON object")
+            value = payload.get("value")
+            if not isinstance(value, (int, float)):
+                raise ValueError("simple mode source must contain numeric field 'value'")
+            # normalize to frame-like packet
+            return [{"value": float(value)}]
+
         if isinstance(payload, list):
             return payload
         raise ValueError("database JSON must be a list of packets")
     except FileNotFoundError:
         return []
+    except urllib.error.HTTPError as exc:
+        print(f"[ee] HTTP error reading {source_location}: {exc.code} {exc.reason}")
+    except urllib.error.URLError as exc:
+        print(f"[ee] network error reading {source_location}: {exc.reason}")
+    except TimeoutError:
+        print(f"[ee] timeout while reading {source_location}")
     except json.JSONDecodeError as exc:
-        print(f"[ee] JSON parse error: {exc}")
+        where = source_location if source_type == "network" else Path(source_location).name
+        print(f"[ee] JSON parse error in {where}: {exc}")
     except ValueError as exc:
         print(f"[ee] {exc}")
     return []
@@ -73,8 +563,27 @@ def next_frame(feed: dict) -> list[dict]:
     packets = read_latest_packets(feed)
     if not packets:
         return []
+
     now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     frame = []
+
+    if feed.get("simple", False):
+        for packet in packets:
+            value = packet.get("value", 0.0)
+            frame.append(
+                {
+                    "ts": "DEMO",
+                    "asset_id": "DEMO",
+                    "signal": "DEMO",
+                    "value": float(value),
+                    "unit": "DEMO",
+                    "quality": "DEMO",
+                    "batch_id": "DEMO",
+                    "seq": "DEMO",
+                }
+            )
+        return frame
+
     for packet in packets:
         clone = dict(packet)
         clone.setdefault("ts", now)
@@ -132,7 +641,8 @@ def refresh_table_with_frame(table, frame):
         for col, val in enumerate(values):
             item = QtWidgets.QTableWidgetItem(val)
             item.setTextAlignment(QtCore.Qt.AlignCenter)
-            if packet.get("quality") != "GOOD":
+            # only highlight known degraded qualities
+            if packet.get("quality") in {"WARN", "ERR"}:
                 item.setBackground(QtGui.QColor(255, 205, 210))
             table.setItem(row, col, item)
 
@@ -246,11 +756,14 @@ def update_kpis(packet, kpi_labels, kpi_cache):
 
 # exec a single refresh cycle:
 #  -> load packets -> update UI -> log output -> repeat
-def handle_stream_tick(feed, table, log_panel, process_items, signal_index, kpi_labels, kpi_cache, timer, stream_state, db_path, graph_state):
+def handle_stream_tick(feed, table, log_panel, process_items, signal_index, kpi_labels, kpi_cache, stream_state, source_label, graph_state):
+    # drain async mqtt logs first
+    _drain_mqtt_logs(feed, log_panel)
+
     frame = next_frame(feed)
     if not frame:
         if not stream_state["waiting_for_data"]:
-            log_panel.appendPlainText(f"[ww] no packets found in {db_path.name}, waiting")
+            log_panel.appendPlainText(f"[ww] no packets found in {source_label}, waiting")
             stream_state["waiting_for_data"] = True
         return
 
@@ -263,24 +776,62 @@ def handle_stream_tick(feed, table, log_panel, process_items, signal_index, kpi_
         update_process_view(packet, process_items, signal_index)
         update_kpis(packet, kpi_labels, kpi_cache)
 
+
 # start-stop
-def toggle_stream(active, timer, status_label, source_combo, stream_state):
+def toggle_stream(active, timer, status_label, source_combo, stream_state, polling_seconds, feed, log_panel):
     stream_state["waiting_for_data"] = False
+
     if active:
-        timer.start(1000)
-        status_label.setText(f"Datastream running: {source_combo.currentText()}")
+        if feed["source_type"] == "mqtt":
+            mqtt_start(feed)
+            timer.start(120)  # UI-side drain cadence; event-driven ingest itself is callback-based
+            status_label.setText(f"Datastream running: {source_combo.currentText()} (event-driven)")
+            _drain_mqtt_logs(feed, log_panel)
+        else:
+            polling_ms = max(100, int(float(polling_seconds) * 1000))
+            timer.start(polling_ms)
+            status_label.setText(f"Datastream running: {source_combo.currentText()} ({polling_seconds:g}s)")
     else:
         timer.stop()
+        if feed["source_type"] == "mqtt":
+            mqtt_stop(feed)
+            _drain_mqtt_logs(feed, log_panel)
         status_label.setText("stream idle")
+
+
+def on_send_control_clicked(feed, log_panel):
+    ok, msg = mqtt_publish_dummy_control(feed)
+    prefix = "[ii]" if ok else "[ee]"
+    log_panel.appendPlainText(f"{prefix} {msg}")
 
 
 # entry point
 def main():
+    parser = argparse.ArgumentParser(description="potato-fe telemetry UI")
+    parser.add_argument(
+        "--simple",
+        action="store_true",
+        help="simple values",
+    )
+    parser.add_argument(
+        "--config",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="path to config JSON file (default: ./config.json)",
+    )
+    args = parser.parse_args()
+
     app = QtWidgets.QApplication(sys.argv)
     QtCore.QCoreApplication.setOrganizationName(f"{sofname}-{version}")
 
+    active_signal_profiles = SIMPLE_SIGNAL_PROFILES if args.simple else DEFAULT_SIGNAL_PROFILES
+    signal_lookup = {profile["signal"]: profile for profile in active_signal_profiles}
+    default_db_path = DB_SIMPLE_PATH if args.simple else DB_FEED_PATH
+
+    runtime_config = load_runtime_config(Path(args.config).expanduser(), default_db_path)
+
     main_window = QtWidgets.QMainWindow()
-    main_window.setWindowTitle(f"{sofname}-{version}")
+    mode_suffix = " [DEMO]" if args.simple else ""
+    main_window.setWindowTitle(f"{sofname}-{version}{mode_suffix}")
     main_window.resize(1400, 860)
 
     central_widget = QtWidgets.QWidget()
@@ -288,17 +839,24 @@ def main():
 
     control_layout = QtWidgets.QHBoxLayout()
     ingest_source_combo = QtWidgets.QComboBox()
-    ingest_source_combo.addItems(["JSON"])
+
+    source_type = runtime_config["source"]["type"]
+    source_display = runtime_config["source"]["display_location"]
+    source_display_text = f"{source_type}:{source_display}"
+    ingest_source_combo.addItems([source_display_text])
+
     ingest_button = QtWidgets.QPushButton("Start")
     ingest_button.setCheckable(True)
     ingest_status_label = QtWidgets.QLabel("Idle")
     ingest_status_label.setStyleSheet("color: #90CAF9;")
     edit_checkbox = QtWidgets.QCheckBox("Edit mode")
+    control_pub_button = QtWidgets.QPushButton("Send dummy control")
 
     control_layout.addWidget(QtWidgets.QLabel("Ingest source:"))
     control_layout.addWidget(ingest_source_combo)
     control_layout.addWidget(ingest_button)
     control_layout.addWidget(ingest_status_label)
+    control_layout.addWidget(control_pub_button)
     control_layout.addStretch(1)
     control_layout.addWidget(edit_checkbox)
     root_layout.addLayout(control_layout)
@@ -364,7 +922,7 @@ def main():
     main_tab_layout.addWidget(splitter, 1)
 
     # graph tab
-    graph_tab, graph_state = build_graph_tab(signal_profiles)
+    graph_tab, graph_state = build_graph_tab(active_signal_profiles)
 
     # log tab
     logs_tab = QtWidgets.QWidget()
@@ -380,9 +938,13 @@ def main():
 
     main_window.setCentralWidget(central_widget)
 
-    feed = create_feed(DB_FEED_PATH)
+    feed = create_feed(runtime_config, simple=args.simple)
     stream_state = {"waiting_for_data": False}
     kpi_cache = {}
+
+    # enable/disable control publish button based on source
+    control_pub_button.setEnabled(feed["source_type"] == "mqtt")
+    control_pub_button.clicked.connect(partial(on_send_control_clicked, feed=feed, log_panel=log_panel))
 
     stream_timer = QtCore.QTimer()
     stream_timer.timeout.connect(
@@ -395,9 +957,8 @@ def main():
             signal_index=signal_lookup,
             kpi_labels=kpi_labels,
             kpi_cache=kpi_cache,
-            timer=stream_timer,
             stream_state=stream_state,
-            db_path=DB_FEED_PATH,
+            source_label=source_display_text,
             graph_state=graph_state,
         )
     )
@@ -409,6 +970,9 @@ def main():
             status_label=ingest_status_label,
             source_combo=ingest_source_combo,
             stream_state=stream_state,
+            polling_seconds=runtime_config["polling"],
+            feed=feed,
+            log_panel=log_panel,
         )
     )
 
@@ -417,7 +981,11 @@ def main():
     )
 
     main_window.show()
-    sys.exit(app.exec_())
+    rc = app.exec_()
+
+    # safety stop for mqtt background loop
+    mqtt_stop(feed)
+    sys.exit(rc)
 
 
 if __name__ == "__main__":

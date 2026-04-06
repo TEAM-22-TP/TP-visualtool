@@ -1,0 +1,7 @@
+{
+"polling": 1,
+"source": {
+"type": "network",
+"location": "http://127.0.0.1:45510/feed.json"
+}
+}

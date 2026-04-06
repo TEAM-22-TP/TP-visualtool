@@ -1,0 +1,7 @@
+{
+"polling": 60,
+"source": {
+"type": "file",
+"location": "./feed.json"
+}
+}

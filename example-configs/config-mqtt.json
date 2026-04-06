@@ -1,0 +1,13 @@
+{
+  "polling": 1,
+  "source": {
+    "type": "mqtt",
+    "broker": "127.0.0.1",
+    "port": 1883,
+    "keepalive": 60,
+    "client_id": "potato-fe-maininterface",
+    "topic_sub": "opcua/#",
+    "topic_pub": "control/potato-fe",
+    "qos": 0
+  }
+}

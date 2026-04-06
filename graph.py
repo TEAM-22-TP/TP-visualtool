@@ -3,6 +3,7 @@
 from functools import partial
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+
 def build_graph_tab(signal_profiles):
     profile_lookup = {row["signal"]: row for row in signal_profiles}
 
@@ -88,7 +89,10 @@ def _refresh_meta_labels(state):
     lo = meta.get("min", 0)
     hi = meta.get("max", 1)
     state["unit_label"].setText(f"Unit: {unit}")
-    state["range_label"].setText(f"Range: {lo} .. {hi}")
+    if meta.get("auto_range"):
+        state["range_label"].setText("Range: auto")
+    else:
+        state["range_label"].setText(f"Range: {lo} .. {hi}")
     state["current_label"].setText("Current: --")
 
 
@@ -131,10 +135,24 @@ def redraw_graph(state):
     if not meta:
         return
 
-    lo = float(meta.get("min", 0.0))
-    hi = float(meta.get("max", 1.0))
-    if hi <= lo:
-        hi = lo + 1.0
+    history = state["history"]
+
+    if meta.get("auto_range") and history:
+        vmin = min(history)
+        vmax = max(history)
+        if vmax <= vmin:
+            pad = max(1.0, abs(vmin) * 0.1)
+            lo = vmin - pad
+            hi = vmax + pad
+        else:
+            pad = (vmax - vmin) * 0.1
+            lo = vmin - pad
+            hi = vmax + pad
+    else:
+        lo = float(meta.get("min", 0.0))
+        hi = float(meta.get("max", 1.0))
+        if hi <= lo:
+            hi = lo + 1.0
 
     left = 72
     right = 24
@@ -172,7 +190,6 @@ def redraw_graph(state):
     title.setBrush(QtGui.QBrush(QtGui.QColor("#ECEFF1")))
     title.setPos(left, 4)
 
-    history = state["history"]
     if len(history) < 2:
         empty = scene.addSimpleText("Waiting for data...")
         empty.setBrush(QtGui.QBrush(QtGui.QColor("#B0BEC5")))
