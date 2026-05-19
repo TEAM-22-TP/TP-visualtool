@@ -1,4 +1,4 @@
-# potato-fe — Python/PyQt5 Visual Tool
+# potato-fe - Python/PyQt5 Visual Tool
 
 Real-time industrial potato processing line monitoring GUI built with Python and PyQt5.
 
@@ -31,7 +31,7 @@ docker compose down
 
 ### Live Data Feed
 
-The `feed.json` file is mounted as a volume into the container. To feed live telemetry data:
+The `feed.json` file intended for testing is mounted as a volume into the container. To feed telemetry data from a file:
 
 1. Compile the data generator:
    ```bash
@@ -42,6 +42,15 @@ The `feed.json` file is mounted as a volume into the container. To feed live tel
    ./mkjson --stop-after 100
    ```
 3. The application inside the container reads `feed.json` every second and updates the UI automatically.
+
+### Configuration
+
+Some possible configurations are in the `example-configs` directory. Use one that fits your connection type (MQTT in live production but local file and network are available for testing the functionality of the program). Modify the broker address, port, and topics for your needs. The `polling` argument is ignored when connection type is set to `mqtt`.
+
+Example usage: for MQTT connection: `./main.py --config path/to/config-mqtt.json`; or read from a file locally: `./main.py --config path/to/config-local.json`. Use the `--simple` flag if you're reading only one synthetic variable.
+
+The blocks view (processing line components) of the project is stored in `scene.json`. This is loaded once at startup. If you want to modify the look of the blocks, do it in this file.
+
 
 ### Architecture
 
