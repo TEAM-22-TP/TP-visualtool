@@ -45,7 +45,7 @@ The `feed.json` file intended for testing is mounted as a volume into the contai
 
 ### Configuration
 
-Some possible configurations are in the `example-configs` directory. Use one that fits your connection type (MQTT in live production but local file and network are available for testing the functionality of the program). Modify the broker address, port, and topics for your needs. The `polling` argument is ignored when connection type is set to `mqtt`.
+Some possible configurations are in the `example-configs` directory. Use one that fits your connection type (MQTT in live production but local file and network are available for testing the functionality of the program). Modify the broker address, port, and topics for your needs. The `polling` option is ignored when connection type is set to `mqtt`.
 
 Example usage: for MQTT connection: `./main.py --config path/to/config-mqtt.json`; or read from a file locally: `./main.py --config path/to/config-local.json`. Use the `--simple` flag if you're reading only one synthetic variable.
 
